@@ -13,7 +13,7 @@ for(const entry of entries){if(!entry.row[12]){const value=nextNumber_(p,entry.r
 }SpreadsheetApp.flush();}finally{lock.releaseLock();}
 }
 function nextNumber_(props,date){const day=Utilities.formatDate(new Date(date),'Asia/Taipei','yyyyMMdd');const key='DAILY_SEQ_'+day;const n=Number(props.getProperty(key)||0)+1;props.setProperty(key,String(n));return day+'-'+String(n).padStart(3,'0');}
-function doGet(){return json_({ok:true,service:'mu-pos',version:6});}
+function doGet(){return json_({ok:true,service:'mu-pos',version:7});}
 function json_(v){return ContentService.createTextOutput(JSON.stringify(v)).setMimeType(ContentService.MimeType.JSON);}
 function month_(date){return Utilities.formatDate(new Date(date),'Asia/Taipei','yyyy-MM');}
 function decode_(r){return {id:r[0],date:r[1],kind:r[2],table:r[3],total:Number(r[5]),note:r[6],refundReason:r[7],refundDate:r[8],updatedAt:r[9],version:Number(r[10]),items:JSON.parse(r[11]),orderNo:String(r[12]||''),month:month_(r[1])};}
@@ -22,8 +22,8 @@ if(!['內用','外帶'].includes(o.kind))throw Error('INVALID_DATA');
 if(o.kind==='內用'&&!['A1','A2','B1','B2','B3','B4',...Array.from({length:10},(_,i)=>String(i+1))].includes(o.table))throw Error('INVALID_TABLE_NUMBER');
 if(!Array.isArray(o.items)||o.items.length>200)throw Error('INVALID_DATA');
 const ids=new Set();o.total=0;
-o.items.forEach(i=>{if(typeof i.lineId!=='string'||ids.has(i.lineId)||typeof i.name!=='string'||i.name.length>200||!Number.isSafeInteger(i.qty)||i.qty<1||i.qty>999||!Number.isSafeInteger(i.price)||i.price<0||i.price>10000000)throw Error('INVALID_ITEMS');ids.add(i.lineId);i.variant=i.variant||'';if(!['','冰杯','熱杯','熱壺'].includes(i.variant))throw Error('INVALID_ITEMS');const levels=['正常','半','少','微','無'];i.sweetness=i.sweetness||'正常';if(!levels.includes(i.sweetness))throw Error('INVALID_ITEMS');i.ice=i.variant.startsWith('冰')?(i.ice||'正常'):'';i.heat=i.variant.startsWith('熱')?(i.heat||'熱'):'';if(i.ice&&!levels.includes(i.ice)||i.heat&&!['熱','溫'].includes(i.heat))throw Error('INVALID_ITEMS');o.total+=i.qty*i.price;});
-if(!Number.isSafeInteger(o.total)||JSON.stringify(o.items).length>40000)throw Error('INVALID_ITEMS');
+o.items.forEach(i=>{if(typeof i.lineId!=='string'||ids.has(i.lineId)||typeof i.name!=='string'||i.name.length>200||!Number.isSafeInteger(i.qty)||i.qty<1||i.qty>999||!Number.isSafeInteger(i.price)||i.price< -10000000||i.price>10000000||(i.price<0&&i.group!=='減項'))throw Error('INVALID_ITEMS');ids.add(i.lineId);i.variant=i.variant||'';if(!['','冰杯','熱杯','熱壺'].includes(i.variant))throw Error('INVALID_ITEMS');const levels=['正常','半','少','微','無'];i.sweetness=i.sweetness||'正常';if(!levels.includes(i.sweetness))throw Error('INVALID_ITEMS');i.ice=i.variant.startsWith('冰')?(i.ice||'正常'):'';i.heat=i.variant.startsWith('熱')?(i.heat||'熱'):'';if(i.ice&&!levels.includes(i.ice)||i.heat&&!['熱','溫'].includes(i.heat))throw Error('INVALID_ITEMS');o.total+=i.qty*i.price;});
+if(!Number.isSafeInteger(o.total)||o.total<0||JSON.stringify(o.items).length>40000)throw Error('INVALID_ITEMS');
 o.note=String(o.note||'').slice(0,2000);if(o.kind==='外帶')o.table='';
 }
 function doPost(e){
@@ -91,7 +91,7 @@ if(!sheet){sheet=book.insertSheet('菜單');sheet.getRange(1,1,1,8).setValues([[
 else if(!sheet.getRange(1,8).getValue())sheet.getRange(1,8).setValue('冷熱選項');
 if(req.action==='menuGet'){const count=sheet.getLastRow()-1;return {ok:true,data:count?sheet.getRange(2,1,count,8).getValues().map(r=>({id:String(r[0]),group:String(r[1]),name:String(r[2]),price:Number(r[3]),active:r[4]!==false,sort:Number(r[5]),updatedAt:String(r[6]),options:r[7]?JSON.parse(r[7]):undefined})):[]};}
 if(!Array.isArray(req.data)||req.data.length>500)throw Error('INVALID_DATA');
-const seen=new Set();const rows=req.data.map((item,index)=>{if(typeof item.id!=='string'||!item.id||seen.has(item.id)||typeof item.group!=='string'||!item.group.trim()||item.group.length>100||typeof item.name!=='string'||!item.name.trim()||item.name.length>200||!Number.isSafeInteger(item.price)||item.price<0||item.price>10000000)throw Error('INVALID_DATA');if(item.options!=null&&(!Array.isArray(item.options)||item.options.length>2||item.options.some(option=>!['冰杯','熱杯','熱壺'].includes(option.value)||!Number.isSafeInteger(option.price)||option.price<0||option.price>10000000)))throw Error('INVALID_DATA');seen.add(item.id);return [text_(item.id),text_(item.group),text_(item.name),item.price,item.active!==false,index,new Date().toISOString(),JSON.stringify(item.options||[])]});
+const seen=new Set();const rows=req.data.map((item,index)=>{if(typeof item.id!=='string'||!item.id||seen.has(item.id)||typeof item.group!=='string'||!item.group.trim()||item.group.length>100||typeof item.name!=='string'||!item.name.trim()||item.name.length>200||!Number.isSafeInteger(item.price)||item.price< -10000000||item.price>10000000||(item.price<0&&item.group!=='減項'))throw Error('INVALID_DATA');if(item.group==='減項'&&item.options?.length)throw Error('INVALID_DATA');if(item.options!=null&&(!Array.isArray(item.options)||item.options.length>2||item.options.some(option=>!['冰杯','熱杯','熱壺'].includes(option.value)||!Number.isSafeInteger(option.price)||option.price<0||option.price>10000000)))throw Error('INVALID_DATA');seen.add(item.id);return [text_(item.id),text_(item.group),text_(item.name),item.price,item.active!==false,index,new Date().toISOString(),JSON.stringify(item.options||[])]});
 const old=sheet.getLastRow()-1;if(old)sheet.getRange(2,1,old,8).clearContent();if(rows.length)sheet.getRange(2,1,rows.length,8).setValues(rows);SpreadsheetApp.flush();return {ok:true,count:rows.length};
 }finally{lock.releaseLock();}
 }

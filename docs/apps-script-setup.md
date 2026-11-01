@@ -1,5 +1,9 @@
 # 月份訂單 Apps Script v3 設定
 
+## v7 減項與負數單價部署
+
+新增「減項」分類，可在菜單設定建立負數單價的折抵品項。訂單總金額必須大於或等於 0。請將 `apps-script/Code.gs` 全文貼回原 Apps Script 專案，儲存後到「管理部署」編輯原 Web App 部署，選「新增版本」再部署。原 `/exec` URL 保持不變，開啟後應顯示 `version:7`。前端修改也要重新部署 GitHub Pages。現有試算表不必改欄位，也不必重新執行 `setup`。
+
 ## v6 菜單備份部署
 
 前端菜單設定與冷熱分價備份需要 Apps Script v6。保留 `SPREADSHEET_ID` 與 `POS_ACCESS_KEY`，將本專案 `apps-script/Code.gs` 全文更新至原 Apps Script 專案，建立新版本並更新原部署。開啟原 `/exec` 應回傳 `version:6`。首次成功備份菜單時自動建立「菜單」分頁；既有菜單分頁會增加「冷熱選項」欄。原有每月訂單分頁與 `_SyncLog` 保留。前端網站也須重新部署靜態輸出。
