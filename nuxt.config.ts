@@ -12,5 +12,5 @@ export default defineNuxtConfig({
       meta: [{ name: "theme-color", content: "#65452f" }, { name: "viewport", content: "width=device-width, initial-scale=1, viewport-fit=cover" }],
     },
   },
-  nitro: { prerender: { routes: ["/", "/orders", "/accounts", "/settings"] } },
+  nitro: { prerender: { routes: ["/", "/orders", "/accounts", "/settings", "/backup"] } },
 });

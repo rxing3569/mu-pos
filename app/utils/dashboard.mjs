@@ -1,6 +1,27 @@
-export function dayKey(value){return new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(value))}
-export function dailyRevenue(orders,month){
- const count=new Date(Number(month.slice(0,4)),Number(month.slice(5)),0).getDate()
- return Array.from({length:count},(_,i)=>{const date=month+'-'+String(i+1).padStart(2,'0');const rows=orders.filter(o=>dayKey(o.date)===date);return {date,total:rows.reduce((n,o)=>n+o.total,0),count:rows.length}})
+const taipeiDateFormatter = new Intl.DateTimeFormat('sv-SE', {
+  timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit'
+})
+
+export function dayKey(value) {
+  return taipeiDateFormatter.format(new Date(value))
 }
-export function itemCount(order){return order.items.reduce((n,i)=>n+i.qty,0)}
+
+export function dailyRevenue(orders, month) {
+  const count = new Date(Number(month.slice(0, 4)), Number(month.slice(5)), 0).getDate()
+  const days = Array.from({length: count}, (_, index) => ({
+    date: month + '-' + String(index + 1).padStart(2, '0'), total: 0, count: 0
+  }))
+  for (const order of orders) {
+    const date = dayKey(order.date)
+    if (!date.startsWith(month)) continue
+    const day = days[Number(date.slice(8)) - 1]
+    if (!day) continue
+    day.total += order.total
+    day.count++
+  }
+  return days
+}
+
+export function itemCount(order) {
+  return order.items.reduce((total, item) => total + item.qty, 0)
+}
