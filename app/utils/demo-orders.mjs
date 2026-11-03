@@ -36,11 +36,11 @@ export function makeDemoOrders(state, menu, discount, now = new Date()) {
         const items = Array.from({length:1+Math.floor(random()*5)}, () => {
           const product = pick(available)
           const isDrink = drinks.has(product.group) && product.name !== '啤酒'
-          const variant = isDrink ? (product.group === '冰沙' ? '冰' : random()<.57 ? '冰' : '熱') : ''
+          const variant = isDrink ? (product.group === '冰沙' ? '冰杯' : random()<.57 ? '冰杯' : '熱杯') : ''
           const loyal = random() < .16
           const basePrice = product.price
           const loyaltyAmount = loyal ? (Math.round(discount) > 0 ? Math.round(discount) : 130) : 0
-          const item = {id:product.id,group:product.group,name:product.name,lineId:crypto.randomUUID(),qty:1+Math.floor(random()*3),variant,basePrice,price:Math.max(0,basePrice-loyaltyAmount),loyaltyApplied:loyal,loyaltyAmount,sweetness:isDrink?pick(sweetness):'正常',ice:variant==='冰'?pick(ice):'',heat:variant==='熱'?pick(['熱','溫']):''}
+          const item = {id:product.id,group:product.group,name:product.name,lineId:crypto.randomUUID(),qty:1+Math.floor(random()*3),variant,basePrice,price:Math.max(0,basePrice-loyaltyAmount),loyaltyApplied:loyal,loyaltyAmount,sweetness:isDrink?pick(sweetness):'正常',ice:variant==='冰杯'?pick(ice):'',heat:variant==='熱杯'?pick(['熱','溫']):''}
           if (product.group === '主餐') item.mealDrink = {name:pick(mealDrinks),variant:pick(['冰','熱']),sweetness:pick(sweetness),ice:pick(ice),heat:'熱'}
           return item
         })
@@ -56,4 +56,14 @@ export function makeDemoOrders(state, menu, discount, now = new Date()) {
   state.orders = [...existing,...generated]
   state.counters = counters
   return generated.length
+}
+
+export function normalizeDemoOrder(order) {
+  return {
+    ...order,
+    items: order.items.map(item => ({
+      ...item,
+      variant: item.variant === '冰' ? '冰杯' : item.variant === '熱' ? '熱杯' : item.variant,
+    })),
+  }
 }

@@ -8,7 +8,11 @@ import {
 } from "~/utils/local-orders.mjs";
 import { dayKey, dailyRevenue, itemCount } from "~/utils/dashboard.mjs";
 import { requestAppsScript, listAppsScript } from "~/utils/apps-script.mjs";
-import { makeDemoOrders } from "~/utils/demo-orders.mjs";
+import { reconcileMenuIds } from "~/utils/menu-ids.mjs";
+import { makeDemoOrders, normalizeDemoOrder } from "~/utils/demo-orders.mjs";
+import uploadIcon from "~/assets/icons/upload.svg?url";
+import backupIcon from "~/assets/icons/backup.svg?url";
+const isDev = import.meta.dev;
 const router = useRouter(),
   route = useRoute(),
   cart = ref([]),
@@ -48,7 +52,7 @@ onBeforeUnmount(() => {
   document.removeEventListener("visibilitychange", updateVisible);
 });
 async function backupIfDue() {
-  if (!online.value || !accessKey.value || busy.value) return;
+  if (route.path === "/backup" || !online.value || !accessKey.value || busy.value) return;
   const state = await localRead();
   if (!state.queue.length && !hasMenuToBackup()) return;
   const last = Date.parse(state.lastSync || "") || 0;
@@ -74,11 +78,21 @@ const connectDialog = ref(null),
   connectError = ref(""),
   connecting = ref(false),
   resumeMenuSave = ref(false),
+  resumeMenuForce = ref(false),
   resumeSync = ref(false);
 const backupOverlayDialog = ref(null),
   syncingBackup = ref(false),
   syncCompleted = ref(0),
-  syncTotal = ref(0);
+  syncTotal = ref(0),
+  syncError = ref("");
+onMounted(() => {
+  syncError.value = sessionStorage.getItem("mu-last-sync-error") || "";
+});
+function recordSyncError(error) {
+  syncError.value = error;
+  sessionStorage.setItem("mu-last-sync-error", error);
+  showSnackbar(error);
+}
 watch(syncingBackup, async (active) => {
   await nextTick();
   if (active && !backupOverlayDialog.value?.open)
@@ -97,6 +111,7 @@ function cancelConnect() {
   keyInput.value = "";
   connectDialog.value?.close();
   resumeMenuSave.value = false;
+  resumeMenuForce.value = false;
   resumeSync.value = false;
 }
 const pendingCheckout = ref(null);
@@ -232,6 +247,16 @@ groups.forEach((group, index) => {
   group[2] ||= "legacy-" + index;
 });
 const selectedSettingsCategory = ref(groups[0][0]);
+const menuSaveConfirmDialog = ref(null);
+async function confirmMenuSave() {
+  if (await saveMenuDraft()) menuSaveConfirmDialog.value?.close();
+}
+let menuIdCounters = {};
+function updateMenuIds() {
+  const result = reconcileMenuIds(menu, groups, menuIdCounters);
+  menuIdCounters = result.counters;
+  return result.changed;
+}
 const menuReady = ref(false);
 const menuDraftDirty = ref(false),
   menuSaving = ref(false),
@@ -246,11 +271,13 @@ watch(menuSaving, async (value) => {
 let committedMenu = null,
   committedGroups = null,
   committedLoyalty = 0,
+  committedMenuIdCounters = {},
   pendingLeave = null;
 function snapshotMenu() {
   committedMenu = JSON.parse(JSON.stringify(menu));
   committedGroups = JSON.parse(JSON.stringify(groups));
   committedLoyalty = loyaltyDiscount.value;
+  committedMenuIdCounters = { ...menuIdCounters };
   menuDraftDirty.value = false;
 }
 function markMenuDraft() {
@@ -265,6 +292,7 @@ function discardMenuDraft() {
       ...JSON.parse(JSON.stringify(committedGroups)),
     );
     loyaltyDiscount.value = committedLoyalty;
+    menuIdCounters = { ...committedMenuIdCounters };
     selectedSettingsCategory.value = groups[0]?.[0] || "";
   }
   menuDraftDirty.value = false;
@@ -272,33 +300,37 @@ function discardMenuDraft() {
 function cloudMenuData() {
   return [
     ...groups.map((g) => ({
-      id: "category:" + g[2],
+      type: "分類",
+      key: g[0],
       group: g[0],
       name: g[0],
       price: 0,
-      active: true,
+      nextItemNo: menuIdCounters[g[0]] || 0,
     })),
     {
-      id: "setting:loyalty-discount",
+      type: "設定",
+      key: "熟客券優惠",
       group: "系統設定",
       name: "熟客券優惠",
       price: loyaltyDiscount.value,
-      active: true,
       options: [],
     },
     ...JSON.parse(
       JSON.stringify(
         menu.map((item) => ({
-          ...item,
-          active: true,
+          type: "品項",
+          key: item.id,
+          group: item.group,
+          name: item.name,
+          price: item.price,
           options: menuOptions(item),
         })),
       ),
     ),
   ];
 }
-async function saveMenuDraft() {
-  if (!menuDraftDirty.value || menuSaving.value) return true;
+async function saveMenuDraft(force = false) {
+  if ((!menuDraftDirty.value && !force) || menuSaving.value) return true;
   if (!online.value) {
     menuSaveError.value = "目前離線，連線後再儲存菜單";
     showSnackbar(menuSaveError.value);
@@ -308,6 +340,7 @@ async function saveMenuDraft() {
     menuSaveError.value = "";
     connectError.value = "";
     resumeMenuSave.value = true;
+    resumeMenuForce.value = force;
     if (!connectDialog.value?.open) connectDialog.value?.showModal();
     return false;
   }
@@ -324,6 +357,7 @@ async function saveMenuDraft() {
       JSON.stringify(groups.map((g) => ({ name: g[0], id: g[2] }))),
     );
     localStorage.setItem("mu-loyalty-discount", String(loyaltyDiscount.value));
+    localStorage.setItem("mu-menu-id-counters", JSON.stringify(menuIdCounters));
     localStorage.removeItem("mu-menu-dirty");
     snapshotMenu();
     showSnackbar("菜單已儲存並同步");
@@ -419,22 +453,13 @@ async function restoreMenuFromCloud() {
     });
     if (!result.data.length) throw Error("雲端尚無菜單備份");
     const categories = result.data
-      .filter(
-        (item) => item.id.startsWith("category:") && item.group !== "減項",
-      )
-      .map((item) => ({ name: item.group, id: item.id.slice(9) }));
-    const config = result.data.find(
-      (item) => item.id === "setting:loyalty-discount",
-    );
+      .filter((item) => item.type === "分類" && item.key !== "減項")
+      .map((item) => ({ name: item.key, id: item.key, nextItemNo: item.nextItemNo }));
+    const config = result.data.find((item) => item.type === "設定" && item.key === "熟客券優惠");
     if (config) loyaltyDiscount.value = config.price;
     const items = result.data
-      .filter(
-        (item) =>
-          !item.id.startsWith("category:") &&
-          !item.id.startsWith("setting:") &&
-          item.group !== "減項",
-      )
-      .map(({ active, ...item }) => item);
+      .filter((item) => item.type === "品項" && item.group !== "減項")
+      .map(({ type, key, sort, updatedAt, nextItemNo, ...item }) => ({ ...item, id: key }));
     if (!items.length) throw Error("雲端菜單沒有品項");
     menu.splice(0, menu.length, ...items);
     groups.splice(
@@ -450,6 +475,15 @@ async function restoreMenuFromCloud() {
     );
     groups.splice(0, groups.length, ...groups.filter((g) => g[0] !== "減項"));
     menu.splice(0, menu.length, ...menu.filter((i) => i.group !== "減項"));
+    menuIdCounters = Object.fromEntries(
+      categories.map((category) => [
+        category.name,
+        Number(
+          category.nextItemNo,
+        ) || 0,
+      ]),
+    );
+    updateMenuIds();
     selectedSettingsCategory.value = groups[0]?.[0] || "";
     persistCategories();
     menuRestoreDialog.value.close();
@@ -471,6 +505,9 @@ onMounted(() => {
   try {
     loyaltyDiscount.value =
       Number(localStorage.getItem("mu-loyalty-discount") || 0) || 0;
+    menuIdCounters = JSON.parse(
+      localStorage.getItem("mu-menu-id-counters") || "{}",
+    );
     const saved = JSON.parse(localStorage.getItem("mu-menu") || "null");
     if (Array.isArray(saved) && saved.length)
       menu.splice(0, menu.length, ...saved);
@@ -510,19 +547,32 @@ onMounted(() => {
         migrated = true;
       }
     } else if (Array.isArray(saved) && saved.length) {
-      groups.splice(0, groups.length, ...[...new Set(menu.map(item => item.group))]
-        .filter(name => name && name !== "減項")
-        .map(name => [name, "", crypto.randomUUID()]));
+      groups.splice(
+        0,
+        groups.length,
+        ...[...new Set(menu.map((item) => item.group))]
+          .filter((name) => name && name !== "減項")
+          .map((name) => [name, "", crypto.randomUUID()]),
+      );
       migrated = true;
     } else migrated = true;
-    for (const name of [...new Set(menu.map(item => item.group))]) {
-      if (name && name !== "減項" && !groups.some(group => group[0] === name)) {
+    for (const name of [...new Set(menu.map((item) => item.group))]) {
+      if (
+        name &&
+        name !== "減項" &&
+        !groups.some((group) => group[0] === name)
+      ) {
         groups.push([name, "", crypto.randomUUID()]);
         migrated = true;
       }
     }
+    if (updateMenuIds()) migrated = true;
     if (migrated) {
       localStorage.setItem("mu-menu", JSON.stringify(menu));
+      localStorage.setItem(
+        "mu-menu-id-counters",
+        JSON.stringify(menuIdCounters),
+      );
       localStorage.setItem(
         "mu-categories",
         JSON.stringify(groups.map((g) => ({ name: g[0], id: g[2] }))),
@@ -568,8 +618,14 @@ function saveCategory() {
     const old = editingCategory.value[0];
     editingCategory.value[0] = name;
     menu.forEach((item) => {
-      if (item.group === old) item.group = name;
+      if (item.group === old) {
+        item.group = name;
+        item.id = name + item.id.slice(old.length);
+      }
     });
+    menuIdCounters[name] = menuIdCounters[old] || 0;
+    delete menuIdCounters[old];
+    updateMenuIds();
     selectedSettingsCategory.value = name;
   } else {
     groups.push([name, "", crypto.randomUUID()]);
@@ -610,7 +666,7 @@ function openItemDialog(item = null) {
   itemDraft.value = item
     ? JSON.parse(JSON.stringify(item))
     : {
-        id: crypto.randomUUID(),
+        id: "",
         group: selectedSettingsCategory.value,
         name: "",
         price: 0,
@@ -671,9 +727,15 @@ function saveItemDraft() {
     return;
   }
   item.price = item.options[0]?.price ?? item.price;
+  if (
+    editingItemId.value &&
+    menu.find((row) => row.id === editingItemId.value)?.group !== item.group
+  )
+    item.id = "";
   const index = menu.findIndex((row) => row.id === editingItemId.value);
   if (index >= 0) menu.splice(index, 1, item);
   else menu.push(item);
+  updateMenuIds();
   markMenuDraft();
   selectedSettingsCategory.value = item.group;
   itemDialog.value.close();
@@ -997,7 +1059,8 @@ const dailyTotal = computed(() =>
     .filter((o) => dayKey(o.date) === selectedDay.value)
     .reduce((n, o) => n + o.total, 0),
 );
-const ordersReady = ref(false), ordersLoading = ref(false);
+const ordersReady = ref(false),
+  ordersLoading = ref(false);
 let monthLoadSequence = 0;
 watch(selectedMonth, async () => {
   const sequence = ++monthLoadSequence;
@@ -1007,7 +1070,12 @@ watch(selectedMonth, async () => {
   try {
     await refreshLocal();
     const current = taipeiDay(new Date()).slice(0, 7);
-    if (selectedMonth.value < current && connected.value && online.value && orders.value.length === 0)
+    if (
+      selectedMonth.value < current &&
+      connected.value &&
+      online.value &&
+      orders.value.length === 0
+    )
       await downloadMonth();
   } catch (error) {
     showSnackbar("讀取月份資料失敗：" + error.message);
@@ -1148,6 +1216,10 @@ async function refreshLocal() {
 const seedingDemo = ref(false);
 async function seedDemoData() {
   if (seedingDemo.value) return;
+  if (demoCount.value) {
+    showSnackbar("請先清除現有測試資料，再重新建立");
+    return;
+  }
   seedingDemo.value = true;
   try {
     const count = await localChange((state) =>
@@ -1169,6 +1241,56 @@ async function seedDemoData() {
     seedingDemo.value = false;
   }
 }
+const managingDemo = ref(false);
+async function uploadDemoData() {
+  if (managingDemo.value || busy.value) return;
+  managingDemo.value = true;
+  try {
+    const count = await localChange((state) => {
+      state.orders = state.orders.map((order) => order.demoSeed ? normalizeDemoOrder(order) : order);
+      state.queue = state.queue.map((op) => op.order.demoSeed
+        ? { ...op, order: normalizeDemoOrder(op.order) } : op);
+      const queued = new Set(state.queue.map((op) => op.order.id));
+      const demo = state.orders.filter((order) => order.demoSeed && !order.demoUploaded && !queued.has(order.id));
+      for (const order of demo) {
+        state.queue.push({ operationId: crypto.randomUUID(), order: structuredClone(order), remove: false });
+      }
+      return demo.length;
+    });
+    await refreshLocal();
+    if (count) showSnackbar(`已將 ${count.toLocaleString()} 筆測試訂單加入上傳佇列`);
+    await sync();
+  } catch (error) {
+    showSnackbar("測試資料上傳失敗：" + error.message);
+  } finally {
+    managingDemo.value = false;
+  }
+}
+async function clearDemoData() {
+  if (managingDemo.value || busy.value) return;
+  managingDemo.value = true;
+  try {
+    const result = await localChange((state) => {
+      const demo = state.orders.filter((order) => order.demoSeed);
+      const ids = new Set(demo.map((order) => order.id));
+      state.queue = state.queue.filter((op) => !ids.has(op.order.id));
+      for (const order of demo.filter((order) => order.demoUploaded)) {
+        state.queue.push({ operationId: crypto.randomUUID(), order: structuredClone(order), remove: true });
+      }
+      state.orders = state.orders.filter((order) => !ids.has(order.id));
+      return { local: demo.length, remote: demo.filter((order) => order.demoUploaded).length };
+    });
+    await refreshLocal();
+    showSnackbar(result.remote
+      ? `已清除 ${result.local.toLocaleString()} 筆本機測試訂單；${result.remote.toLocaleString()} 筆雲端刪除待上傳`
+      : `已清除 ${result.local.toLocaleString()} 筆測試訂單`);
+    if (result.remote && online.value) await sync();
+  } catch (error) {
+    showSnackbar("清除測試資料失敗：" + error.message);
+  } finally {
+    managingDemo.value = false;
+  }
+}
 function showLatestDemoMonth() {
   const month = demoMonths.value.at(-1);
   if (month) {
@@ -1178,9 +1300,13 @@ function showLatestDemoMonth() {
   }
 }
 onMounted(async () => {
-  try { await refreshLocal(); }
-  catch (error) { showSnackbar("本機資料讀取失敗：" + error.message); }
-  finally { ordersReady.value = true; }
+  try {
+    await refreshLocal();
+  } catch (error) {
+    showSnackbar("本機資料讀取失敗：" + error.message);
+  } finally {
+    ordersReady.value = true;
+  }
 });
 async function loadCloud(key, force = false) {
   const month = selectedMonth.value;
@@ -1311,13 +1437,16 @@ async function connect() {
     await resolveLegacy(key);
     keyInput.value = "";
     const continueMenu = resumeMenuSave.value,
+      continueMenuForce = resumeMenuForce.value,
       continueSync = resumeSync.value;
     resumeMenuSave.value = false;
+    resumeMenuForce.value = false;
     resumeSync.value = false;
     connectDialog.value.close();
     showSnackbar("已連線");
     if (continueMenu) {
-      await saveMenuDraft();
+      const menuSaved = await saveMenuDraft(continueMenuForce);
+      if (menuSaved) menuSaveConfirmDialog.value?.close();
       if (!menuDraftDirty.value && pendingLeave) {
         leaveMenuDialog.value?.close();
         pendingLeave(true);
@@ -1337,26 +1466,30 @@ async function sync() {
   try {
     state = await localRead();
   } catch (error) {
-    showSnackbar("本機資料讀取失敗：" + error.message);
+    recordSyncError("本機資料讀取失敗：" + error.message);
     return;
   }
   if (!state.queue.length && !hasMenuToBackup()) {
     showSnackbar("目前沒有需要備份的資料");
     return;
   }
-  if (navigator.locks) {
-    await navigator.locks.request(
-      "mu-pos-sync",
-      { ifAvailable: true },
-      async (lock) => {
-        if (!lock) {
-          showSnackbar("另一個分頁正在同步");
-          return;
-        }
-        await performSync();
-      },
-    );
-  } else await performSync();
+  try {
+    if (navigator.locks) {
+      await navigator.locks.request(
+        "mu-pos-sync",
+        { ifAvailable: true },
+        async (lock) => {
+          if (!lock) {
+            recordSyncError("另一個分頁正在同步");
+            return;
+          }
+          await performSync();
+        },
+      );
+    } else await performSync();
+  } catch (error) {
+    recordSyncError("同步啟動失敗：" + error.message);
+  }
 }
 async function sendSyncBatch(batch) {
   for (let attempt = 0; ; attempt++) {
@@ -1370,9 +1503,9 @@ async function sendSyncBatch(batch) {
         e instanceof TypeError ||
         !e.code ||
         ["RATE_LIMITED", "BUSY_RETRY", "SERVER_ERROR"].includes(e.code);
-      if (!retryable || attempt >= 2) throw e;
+      if (!retryable || attempt >= (e.code === "RATE_LIMITED" ? 4 : 2)) throw e;
       await new Promise((resolve) =>
-        setTimeout(resolve, 500 * 2 ** attempt + Math.random() * 250),
+        setTimeout(resolve, e.code === "RATE_LIMITED" ? 16000 : 500 * 2 ** attempt + Math.random() * 250),
       );
     }
   }
@@ -1387,13 +1520,22 @@ async function performSync() {
   busy.value = true;
   syncingBackup.value = true;
   try {
+    // Existing demo operations may have been queued before the cloud variant fix.
+    await localChange((state) => {
+      state.queue = state.queue.map((op) => op.order.demoSeed
+        ? { ...op, order: normalizeDemoOrder(op.order) } : op);
+      state.orders = state.orders.map((order) => order.demoSeed
+        ? normalizeDemoOrder(order) : order);
+    });
     const snapshot = (await localRead()).queue;
     syncTotal.value = snapshot.length;
     syncCompleted.value = 0;
     let offset = 0;
+    let maxBatch = 10;
+    let emptyBatches = 0;
     while (offset < snapshot.length) {
       const batch = [];
-      while (offset < snapshot.length && batch.length < 10) {
+      while (offset < snapshot.length && batch.length < maxBatch) {
         const next = snapshot[offset];
         if (
           new TextEncoder().encode(
@@ -1414,18 +1556,29 @@ async function performSync() {
       for (const result of r.data) {
         if (!result.ok)
           throw Error(
-            result.error === "ORDER_NUMBER_CONFLICT"
+            `第 ${syncCompleted.value + 1}／${syncTotal.value} 筆（${batch.find((op) => op.operationId === result.operationId)?.order.orderNo || "未知訂單"}）：` + (result.error === "ORDER_NUMBER_CONFLICT"
               ? "流水號重複，請重新編號後再同步"
-              : result.error,
+              : result.error),
           );
         await localChange((state) => {
+          const operation = state.queue.find((x) => x.operationId === result.operationId);
+          if (operation?.order.demoSeed && !operation.remove) {
+            const order = state.orders.find((x) => x.id === operation.order.id);
+            if (order) order.demoUploaded = true;
+          }
           state.queue = state.queue.filter(
             (x) => x.operationId !== result.operationId,
           );
         });
         syncCompleted.value++;
       }
-      if (r.data.length < batch.length) break;
+      if (r.data.length < batch.length) {
+        offset -= batch.length - r.data.length;
+        maxBatch = Math.max(1, Math.floor(maxBatch / 2));
+        if (!r.data.length && ++emptyBatches >= 3)
+          throw Error("雲端連續未處理同步資料，請稍後重試");
+        if (!r.data.length) await new Promise((resolve) => setTimeout(resolve, 1500));
+      } else emptyBatches = 0;
     }
     if (
       localStorage.getItem("mu-menu-dirty") === "1" &&
@@ -1442,6 +1595,8 @@ async function performSync() {
     });
     await pruneBackedUp();
     await refreshLocal();
+    syncError.value = "";
+    sessionStorage.removeItem("mu-last-sync-error");
     showSnackbar(
       pendingCount.value
         ? "部分完成，仍有 " + pendingCount.value + " 筆待同步"
@@ -1452,7 +1607,8 @@ async function performSync() {
       resumeSync.value = true;
       requireAccess("存取密碼已失效，請重新輸入");
     }
-    showSnackbar("同步未完成：" + e.message);
+    const progress = syncTotal.value ? `（已完成 ${syncCompleted.value}／${syncTotal.value} 筆）` : "";
+    recordSyncError("同步未完成" + progress + "：" + e.message);
   } finally {
     busy.value = false;
     try {
@@ -1557,6 +1713,12 @@ async function saveOrder() {
         );
         if (index < 0) throw Error("找不到測試訂單");
         state.orders[index] = updated;
+        for (const op of state.queue) {
+          if (op.order.id === updated.id && !op.remove) op.order = structuredClone(updated);
+        }
+        if (updated.demoUploaded) state.queue.push({
+          operationId: crypto.randomUUID(), order: structuredClone(updated), remove: false,
+        });
       });
     } else await saveLocal(JSON.parse(JSON.stringify(editOrder.value)));
     await refreshLocal();
@@ -1576,8 +1738,13 @@ async function confirmDelete() {
   try {
     if (deleteTarget.value.demoSeed) {
       await localChange((state) => {
+        const target = deleteTarget.value;
+        state.queue = state.queue.filter((op) => op.order.id !== target.id);
+        if (target.demoUploaded) state.queue.push({
+          operationId: crypto.randomUUID(), order: structuredClone(target), remove: true,
+        });
         state.orders = state.orders.filter(
-          (order) => order.id !== deleteTarget.value.id,
+          (order) => order.id !== target.id,
         );
       });
     } else
@@ -2169,7 +2336,13 @@ function exportCsv() {
   >
     <div class="dialog-heading">
       <h2 id="table-dialog-title">選擇桌號</h2>
-      <button class="table-close" type="button" autofocus aria-label="關閉桌號選擇" @click="tableDialog.close()">
+      <button
+        class="table-close"
+        type="button"
+        autofocus
+        aria-label="關閉桌號選擇"
+        @click="tableDialog.close()"
+      >
         ×
       </button>
     </div>
@@ -2201,33 +2374,31 @@ function exportCsv() {
         ><NuxtLink to="/orders"><UiIcon name="orders" />訂單</NuxtLink
         ><NuxtLink to="/accounts"><UiIcon name="chart" />營收</NuxtLink
         ><NuxtLink to="/settings"><UiIcon name="settings" />設定</NuxtLink
-        ><NuxtLink to="/backup" class="mobile-backup-link"
-          ><UiIcon name="refresh" />備份</NuxtLink
+        ><NuxtLink to="/backup" class="backup-nav-link"
+          ><img :src="backupIcon" class="ui-icon svg-icon" alt="" />備份</NuxtLink
         >
       </nav>
-      <div class="connection-status" role="status">
-        <span>{{ online ? "● 連線中" : "● 離線" }}</span
-        ><span>待備份 {{ pendingCount }} 筆</span
-        ><small class="backup-time"
-          ><span>上次備份時間</span
-          ><time>{{ backupTime(lastSync) }}</time></small
-        ><button
-          class="sidebar-backup"
-          :disabled="busy || !online"
-          @click="sync"
-        >
-          <UiIcon name="refresh" />{{ busy ? "備份中…" : "立即備份" }}
-        </button>
-        <div class="storage-indicator">
-          <span>本機儲存</span><strong>{{ storageUsage }}</strong>
-        </div>
-      </div>
     </aside>
     <main>
       <div v-if="message" class="notice" @click="message = ''">
         {{ message }} ×
       </div>
-      <div v-if="(!menuReady && (route.path === '/' || route.path === '/settings')) || ((!ordersReady || ordersLoading) && (route.path === '/orders' || route.path === '/accounts'))" class="menu-loading" role="status"><span class="upload-spinner" aria-hidden="true"></span>{{ route.path === '/orders' || route.path === '/accounts' ? '正在讀取本機訂單…' : '正在讀取本機菜單…' }}</div>
+      <div
+        v-if="
+          (!menuReady && (route.path === '/' || route.path === '/settings')) ||
+          ((!ordersReady || ordersLoading) &&
+            (route.path === '/orders' || route.path === '/accounts'))
+        "
+        class="menu-loading"
+        role="status"
+      >
+        <span class="upload-spinner" aria-hidden="true"></span
+        >{{
+          route.path === "/orders" || route.path === "/accounts"
+            ? "正在讀取本機訂單…"
+            : "正在讀取本機菜單…"
+        }}
+      </div>
       <div v-else-if="route.path === '/'" class="workspace">
         <MenuCatalog
           :groups="groups"
@@ -2323,12 +2494,9 @@ function exportCsv() {
         v-else-if="route.path === '/orders'"
       >
         <header class="dashboard-header">
-          <div class="mini-summary">
-            <span
-              >當日營收 <b>{{ money(dailyTotal) }}</b></span
-            ><span
-              >本月營收 <b>{{ money(net) }}</b></span
-            >
+          <div class="metric-grid orders-metric-grid">
+            <article class="metric-card featured"><p>當日營收</p><strong>{{ money(dailyTotal) }}</strong></article>
+            <article class="metric-card"><p>本月營收</p><strong>{{ money(net) }}</strong></article>
           </div>
           <div class="dashboard-tools">
             <button @click="shiftDay(-1)" aria-label="前一天">
@@ -2338,15 +2506,18 @@ function exportCsv() {
               v-model:day="selectedDay"
             /><button @click="shiftDay(1)" aria-label="後一天">
               <UiIcon name="right" /></button
-            ><button
-              v-if="pendingCount"
-              :disabled="busy"
-              @click="renumberPending"
             >
-              重編待同步號碼
+          </div>
+          <div class="dashboard-upload">
+            <button class="primary" :disabled="busy || !online" @click="sync">
+              <img :src="uploadIcon" class="ui-icon svg-icon" alt="" />{{ busy ? "上傳中…" : "上傳" }}
             </button>
+            <span>未上傳 {{ pendingCount.toLocaleString() }} 筆</span>
           </div>
         </header>
+        <button v-if="pendingCount" class="renumber-pending" :disabled="busy" @click="renumberPending">
+          重編待同步號碼
+        </button>
         <div v-if="false" class="dashboard-empty">
           <UiIcon name="link" />
           <h2>連線後查看訂單</h2>
@@ -2414,7 +2585,7 @@ function exportCsv() {
             </article>
             <article class="metric-card">
               <p>本月訂單數量</p>
-              <strong>{{ orders.length }} 筆</strong>
+              <strong>{{ orders.length.toLocaleString() }} 筆</strong>
             </article>
           </div>
           <div class="dashboard-tools">
@@ -2426,6 +2597,12 @@ function exportCsv() {
             >
               <UiIcon name="right" />
             </button>
+          </div>
+          <div class="dashboard-upload">
+            <button class="primary" :disabled="busy || !online" @click="sync">
+              <img :src="uploadIcon" class="ui-icon svg-icon" alt="" />{{ busy ? "上傳中…" : "上傳" }}
+            </button>
+            <span>未上傳 {{ pendingCount.toLocaleString() }} 筆</span>
           </div>
         </header>
         <article class="dashboard-panel">
@@ -2571,11 +2748,21 @@ function exportCsv() {
                 :disabled="!connected"
                 @click="menuRestoreDialog.showModal()"
               >
-                從雲端下載菜單</button
+                下載菜單</button
+              ><button
+                type="button"
+                :disabled="menuSaving"
+                @click="
+                  menuDraftDirty
+                    ? menuSaveConfirmDialog.showModal()
+                    : saveMenuDraft(true)
+                "
+              >
+                上傳菜單</button
               ><button
                 class="primary"
                 :disabled="!menuDraftDirty || menuSaving"
-                @click="saveMenuDraft"
+                @click="menuSaveConfirmDialog.showModal()"
               >
                 {{ menuSaving ? "上傳中…" : "儲存菜單" }}
               </button>
@@ -2834,6 +3021,30 @@ function exportCsv() {
           </form>
         </dialog>
         <dialog
+          ref="menuSaveConfirmDialog"
+          class="settings-dialog"
+          aria-label="確認儲存菜單"
+        >
+          <h2>確認儲存菜單</h2>
+          <p>儲存後會立即生效，並一併上傳至 Google Sheet 雲端菜單。</p>
+          <div class="settings-dialog-actions">
+            <button
+              type="button"
+              :disabled="menuSaving"
+              @click="menuSaveConfirmDialog.close()"
+            >
+              取消</button
+            ><button
+              type="button"
+              class="primary"
+              :disabled="menuSaving"
+              @click="confirmMenuSave"
+            >
+              {{ menuSaving ? "上傳中…" : "確認儲存並上傳" }}
+            </button>
+          </div>
+        </dialog>
+        <dialog
           ref="menuRestoreDialog"
           class="settings-dialog"
           @click="
@@ -2842,7 +3053,7 @@ function exportCsv() {
             }
           "
         >
-          <h2>從雲端下載菜單</h2>
+          <h2>下載菜單</h2>
           <p>這會覆蓋此裝置目前的菜單設定。</p>
           <div class="settings-dialog-actions">
             <button @click="menuRestoreDialog.close()">取消</button
@@ -2874,25 +3085,38 @@ function exportCsv() {
               <span>本機儲存</span><strong>{{ storageUsage }}</strong>
             </div>
           </div>
+          <div v-if="syncError" class="backup-sync-error" role="alert">
+            <strong>上次同步失敗</strong>
+            <p>{{ syncError }}</p>
+          </div>
           <button
             class="primary mobile-backup-button"
             :disabled="busy || !online"
             @click="sync"
           >
-            <UiIcon name="refresh" />{{ busy ? "備份中…" : "立即備份" }}
+            <img :src="backupIcon" class="ui-icon svg-icon" alt="" />{{ busy ? "備份中…" : "立即備份" }}
           </button>
           <button
+            v-if="isDev"
             class="demo-seed-button"
-            :disabled="seedingDemo"
+            :disabled="seedingDemo || managingDemo || busy || demoCount > 0"
             @click="seedDemoData"
           >
             {{ seedingDemo ? "建立中…" : "建立三個月測試訂單" }}
           </button>
-          <p class="demo-seed-note">
+          <p v-if="isDev" class="demo-seed-note">
             約每日平日 50 筆、假日 100
-            筆；僅保存在此裝置，不加入雲端備份。再次建立會替換先前的測試訂單。
+            筆。可上傳至測試用雲端；重新建立前請先清除舊資料。
           </p>
-          <div v-if="demoCount" class="demo-seed-result">
+          <div v-if="isDev && demoCount" class="demo-seed-actions">
+            <button type="button" :disabled="managingDemo || busy || !online" @click="uploadDemoData">
+              上傳測試資料
+            </button>
+            <button type="button" :disabled="managingDemo || busy" @click="clearDemoData">
+              清除測試資料
+            </button>
+          </div>
+          <div v-if="isDev && demoCount" class="demo-seed-result">
             目前有 {{ demoCount.toLocaleString() }} 筆測試訂單（{{
               demoMonths[0]
             }}
