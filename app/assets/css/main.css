@@ -250,6 +250,8 @@ dialog.date-popover::backdrop{background:#18241b66}
 .settings-item-main p{margin:0;font-size:11px;color:#967e6a}
 .settings-item-card>strong{white-space:nowrap;font-size:16px;color:#65452f}
 .settings-item-actions{display:flex;gap:5px}.settings-item-actions button{min-height:36px;padding:6px 10px;background:#f8f0e6;color:#65452f;border-color:#eadccd}
+.settings-item-actions .settings-item-remove{background:#fff1ed;color:#a44836;border-color:#edcfc7}
+.menu-download-status{display:flex;align-items:center;gap:10px;color:#65452f;font-weight:600}.menu-download-status .upload-spinner{width:22px;height:22px;border-width:3px;flex:0 0 auto}
 .settings-empty{text-align:center;padding:70px 20px;border:1px dashed #d9c5b0;border-radius:14px;color:#806854;margin-top:20px}.settings-empty strong{color:#65452f}.settings-empty p{font-size:12px}
 .settings-lock{max-width:400px;margin:8vh auto;padding:34px;background:#fffaf4;border:1px solid #e6d8c8;border-radius:20px;text-align:center;box-shadow:0 14px 35px #67442a12}
 .settings-lock h2{margin:8px 0}.settings-lock p{color:#806854;line-height:1.7}.settings-lock-mark{font-size:36px;color:#b48661}

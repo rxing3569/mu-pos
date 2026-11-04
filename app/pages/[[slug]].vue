@@ -11,6 +11,7 @@ import { requestAppsScript, listAppsScript } from "~/utils/apps-script.mjs";
 import { reconcileMenuIds } from "~/utils/menu-ids.mjs";
 import { makeDemoOrders, normalizeDemoOrder } from "~/utils/demo-orders.mjs";
 import { normalizedPath } from "~/utils/route-path.mjs";
+import { fetchCloudMonth } from "~/utils/cloud-month.mjs";
 import uploadIcon from "~/assets/icons/upload.svg?url";
 import backupIcon from "~/assets/icons/backup.svg?url";
 const isDev = import.meta.dev;
@@ -376,7 +377,10 @@ onBeforeUnmount(() =>
 );
 const storageUsage = ref("計算中…");
 const menuRestoreDialog = ref(null);
+const menuDownloading = ref(false);
 async function restoreMenuFromCloud() {
+  if (menuDownloading.value) return;
+  menuDownloading.value = true;
   try {
     const result = await requestAppsScript(accessKey.value, {
       action: "menuGet",
@@ -422,6 +426,8 @@ async function restoreMenuFromCloud() {
     showSnackbar(error.code === "SCHEMA_MISMATCH"
       ? "雲端「菜單」工作表欄位與目前版本不符，請檢查表頭"
       : error.message);
+  } finally {
+    menuDownloading.value = false;
   }
 }
 async function inspectStorage() {
@@ -617,6 +623,20 @@ function saveItemDraft() {
   markMenuDraft();
   selectedSettingsCategory.value = item.group;
   itemDialog.value.close();
+}
+const itemDeleteDialog = ref(null);
+const itemDeleteTarget = ref(null);
+function openRemoveItem(item) {
+  itemDeleteTarget.value = item;
+  itemDeleteDialog.value.showModal();
+}
+function confirmRemoveItem() {
+  const index = menu.findIndex((item) => item.id === itemDeleteTarget.value?.id);
+  if (index < 0) return;
+  menu.splice(index, 1);
+  markMenuDraft();
+  itemDeleteDialog.value.close();
+  itemDeleteTarget.value = null;
 }
 const dragging = ref(null),
   dropTarget = ref(null);
@@ -1185,54 +1205,10 @@ onMounted(async () => {
     ordersReady.value = true;
   }
 });
-async function loadCloud(key, force = false) {
+async function loadCloud(key) {
   const month = selectedMonth.value;
   const local = await localRead();
-  if (
-    !force &&
-    local.cachedMonth === month &&
-    Number.isInteger(local.syncCursor)
-  ) {
-    let cursor = local.syncCursor;
-    const map = new Map(
-      local.orders.filter((o) => o.month === month).map((o) => [o.id, o]),
-    );
-    while (true) {
-      let r;
-      try {
-        r = await requestAppsScript(key, {
-          action: "changes",
-          month,
-          since: cursor,
-        });
-      } catch (e) {
-        if (e.code === "STALE_CURSOR") return loadCloud(key, true);
-        throw e;
-      }
-      r.deleted.forEach((id) => map.delete(id));
-      r.data.forEach((o) => map.set(o.id, o));
-      cursor = r.nextCursor;
-      if (cursor >= r.syncCursor)
-        return { orders: [...map.values()], cursor, month };
-    }
-  }
-  const orders = [];
-  let offset = 0,
-    revision,
-    cursor;
-  while (true) {
-    const r = await requestAppsScript(key, {
-      action: "list",
-      month,
-      offset,
-      revision,
-    });
-    orders.push(...r.data);
-    revision = r.revision;
-    cursor = r.syncCursor;
-    if (r.nextOffset == null) return { orders, cursor, month };
-    offset = r.nextOffset;
-  }
+  return fetchCloudMonth(key, month, local, requestAppsScript);
 }
 function applyCloud() {
   refreshLocal();
@@ -2747,6 +2723,7 @@ function exportCsv() {
                   </div>
                   <strong>{{ menuPrice(item) }}</strong>
                   <div class="settings-item-actions">
+                    <button type="button" class="settings-item-remove" @click="openRemoveItem(item)">移除</button>
                     <button @click="openItemDialog(item)">編輯</button>
                   </div>
                 </article>
@@ -2887,6 +2864,14 @@ function exportCsv() {
             </div>
           </form>
         </dialog>
+        <dialog ref="itemDeleteDialog" class="settings-dialog" aria-label="確認移除品項">
+          <h2>移除品項</h2>
+          <p>確定要移除「{{ itemDeleteTarget?.name }}」嗎？儲存菜單後會同步到雲端。</p>
+          <div class="settings-dialog-actions">
+            <button type="button" @click="itemDeleteDialog.close()">取消</button>
+            <button type="button" class="primary" @click="confirmRemoveItem">確認移除</button>
+          </div>
+        </dialog>
         <dialog
           ref="menuSaveConfirmDialog"
           class="settings-dialog"
@@ -2914,18 +2899,22 @@ function exportCsv() {
         <dialog
           ref="menuRestoreDialog"
           class="settings-dialog"
+          @cancel="(event) => { if (menuDownloading) event.preventDefault(); }"
           @click="
             (event) => {
-              if (event.target === menuRestoreDialog) menuRestoreDialog.close();
+              if (event.target === menuRestoreDialog && !menuDownloading) menuRestoreDialog.close();
             }
           "
         >
           <h2>下載菜單</h2>
           <p>這會覆蓋此裝置目前的菜單設定。</p>
+          <p v-if="menuDownloading" class="menu-download-status" role="status">
+            <span class="upload-spinner" aria-hidden="true"></span>正在下載並儲存菜單…
+          </p>
           <div class="settings-dialog-actions">
-            <button @click="menuRestoreDialog.close()">取消</button
-            ><button class="primary" @click="restoreMenuFromCloud">
-              確認還原
+            <button :disabled="menuDownloading" @click="menuRestoreDialog.close()">取消</button
+            ><button class="primary" :disabled="menuDownloading" @click="restoreMenuFromCloud">
+              {{ menuDownloading ? "下載中…" : "確認下載" }}
             </button>
           </div>
         </dialog>
