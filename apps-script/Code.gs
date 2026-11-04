@@ -1,6 +1,15 @@
 const HEADER=['訂單 UUID','流水訂單號','用餐方式','桌號','訂單金額','品項資料','整單備註','建立時間','更新時間'];
 const MENU_HEADER=['資料類型','資料鍵','分類','名稱','價格','排序','更新時間','冷熱選項','下個品項號碼'];
+const LEGACY_MENU_HEADER=['品項 UUID','分類','品項名稱','價格','啟用','排序','更新時間','冷熱選項'];
 function checkHeader_(sheet,header){if(sheet.getLastRow()<1)return;const actual=sheet.getRange(1,1,1,header.length).getValues()[0];if(header.some((value,index)=>actual[index]!==value))throw Error('SCHEMA_MISMATCH');}
+function menuHeaderKind_(sheet){
+if(sheet.getLastRow()<1)return 'empty';
+const header=sheet.getRange(1,1,1,9).getValues()[0];
+if(MENU_HEADER.every((value,index)=>header[index]===value))return 'current';
+if(MENU_HEADER.slice(0,5).every((value,index)=>header[index]===value))return 'short';
+if(LEGACY_MENU_HEADER.every((value,index)=>header[index]===value))return 'legacy';
+return 'unknown';
+}
 function setup(){
 const p=PropertiesService.getScriptProperties();if((p.getProperty('POS_ACCESS_KEY')||'').length<32)throw Error('請設定至少32字元密碼');
 const book=SpreadsheetApp.openById(p.getProperty('SPREADSHEET_ID'));book.setSpreadsheetTimeZone('Asia/Taipei');
@@ -75,11 +84,16 @@ const book=SpreadsheetApp.openById(props.getProperty('SPREADSHEET_ID'));
 const lock=LockService.getScriptLock();lock.waitLock(10000);
 try{
 let sheet=book.getSheetByName('菜單');
+if(!sheet&&req.action==='menuGet')return {ok:true,data:[]};
 if(!sheet){sheet=book.insertSheet('菜單');sheet.getRange(1,1,1,9).setValues([MENU_HEADER]);sheet.setFrozenRows(1);}
-else checkHeader_(sheet,MENU_HEADER);
+let headerKind=menuHeaderKind_(sheet);
+if(headerKind==='unknown')throw Error('SCHEMA_MISMATCH');
 if(req.action==='menuGet'){
- const count=sheet.getLastRow()-1;
- const data=count?sheet.getRange(2,1,count,9).getValues().map(r=>({type:String(r[0]),key:String(r[1]),group:String(r[2]),name:String(r[3]),price:Number(r[4]),sort:Number(r[5]),updatedAt:String(r[6]),options:r[7]?JSON.parse(r[7]):[],nextItemNo:Number(r[8])||0})):[];
+ const count=Math.max(0,sheet.getLastRow()-1);
+ const rows=count?sheet.getRange(2,1,count,9).getValues():[];
+ const data=headerKind==='legacy'
+   ?rows.filter(r=>r[0]&&r[4]!==false).map(r=>({type:'品項',key:String(r[0]),group:String(r[1]),name:String(r[2]),price:Number(r[3]),sort:Number(r[5]),updatedAt:String(r[6]),options:r[7]?JSON.parse(r[7]):[],nextItemNo:0}))
+   :rows.filter(r=>r[0]).map(r=>({type:String(r[0]),key:String(r[1]),group:String(r[2]),name:String(r[3]),price:Number(r[4]),sort:Number(r[5]),updatedAt:String(r[6]),options:r[7]?JSON.parse(r[7]):[],nextItemNo:Number(r[8])||0}));
  return {ok:true,data};
 }
 if(!Array.isArray(req.data)||req.data.length>500)throw Error('INVALID_DATA');
@@ -94,6 +108,12 @@ const rows=req.data.map(item=>{
  seen.add(item.key);const bucket=item.type==='分類'?'__categories__':item.type==='設定'?'__settings__':item.group;const sort=(sorts.get(bucket)||0)+1;sorts.set(bucket,sort);
  return [item.type,text_(item.key),text_(item.group),text_(item.name),item.price,sort,new Date().toISOString(),JSON.stringify(item.options||[]),item.type==='分類'?item.nextItemNo:''];
 });
+if(headerKind!=='current'){
+ const occupied=sheet.getLastRow();
+ if(occupied)sheet.getRange(1,1,occupied,9).clearContent();
+ sheet.getRange(1,1,1,9).setValues([MENU_HEADER]);
+ headerKind='current';
+}
 const old=sheet.getLastRow()-1;if(old)sheet.getRange(2,1,old,9).clearContent();if(rows.length)sheet.getRange(2,1,rows.length,9).setValues(rows);SpreadsheetApp.flush();return {ok:true,count:rows.length};
 }finally{lock.releaseLock();}
 }

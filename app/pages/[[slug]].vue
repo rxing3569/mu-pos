@@ -41,9 +41,6 @@ onBeforeUnmount(() => {
   window.removeEventListener("online", updateOnline);
   window.removeEventListener("offline", updateOnline);
 });
-function hasMenuToBackup() {
-  return localStorage.getItem("mu-menu-dirty") === "1" && !menuDraftDirty.value;
-}
 const backupTimeFormatter = new Intl.DateTimeFormat("zh-TW", {
   timeZone: "Asia/Taipei",
   year: "numeric",
@@ -256,6 +253,15 @@ function cloudMenuData() {
     ),
   ];
 }
+async function persistLocalMenu() {
+  const menuData = {
+    items: JSON.parse(JSON.stringify(menu)),
+    categories: groups.map((g) => ({ name: g[0], id: g[2] })),
+    loyaltyDiscount: loyaltyDiscount.value,
+    idCounters: { ...menuIdCounters },
+  };
+  await localChange((state) => { state.menuData = menuData; });
+}
 async function saveMenuDraft(force = false) {
   if ((!menuDraftDirty.value && !force) || menuSaving.value) return true;
   if (!online.value) {
@@ -278,14 +284,7 @@ async function saveMenuDraft(force = false) {
       action: "menuSave",
       data: cloudMenuData(),
     });
-    localStorage.setItem("mu-menu", JSON.stringify(menu));
-    localStorage.setItem(
-      "mu-categories",
-      JSON.stringify(groups.map((g) => ({ name: g[0], id: g[2] }))),
-    );
-    localStorage.setItem("mu-loyalty-discount", String(loyaltyDiscount.value));
-    localStorage.setItem("mu-menu-id-counters", JSON.stringify(menuIdCounters));
-    localStorage.removeItem("mu-menu-dirty");
+    await persistLocalMenu();
     snapshotMenu();
     showSnackbar("菜單已儲存並同步");
     return true;
@@ -379,20 +378,14 @@ async function restoreMenuFromCloud() {
       action: "menuGet",
     });
     if (!Array.isArray(result.data)) throw Error("雲端菜單資料格式不符");
-    if (!result.data.length) {
-      menuRestoreDialog.value.close();
-      showSnackbar("雲端尚無菜單資料；請先在「菜單」工作表填入後再下載");
-      return;
-    }
     const categories = result.data
       .filter((item) => item.type === "分類" && item.key !== "減項")
       .map((item) => ({ name: item.key, id: item.key, nextItemNo: item.nextItemNo }));
     const config = result.data.find((item) => item.type === "設定" && item.key === "熟客券優惠");
-    if (config) loyaltyDiscount.value = config.price;
+    loyaltyDiscount.value = config ? Number(config.price) || 0 : 0;
     const items = result.data
       .filter((item) => item.type === "品項" && item.group !== "減項")
       .map(({ type, key, sort, updatedAt, nextItemNo, ...item }) => ({ ...item, id: key }));
-    if (!items.length) throw Error("雲端菜單沒有品項");
     menu.splice(0, menu.length, ...items);
     groups.splice(
       0,
@@ -417,14 +410,10 @@ async function restoreMenuFromCloud() {
     );
     updateMenuIds();
     selectedSettingsCategory.value = groups[0]?.[0] || "";
-    localStorage.setItem("mu-menu", JSON.stringify(menu));
-    localStorage.setItem("mu-categories", JSON.stringify(groups.map((g) => ({ name: g[0], id: g[2] }))));
-    localStorage.setItem("mu-loyalty-discount", String(loyaltyDiscount.value));
-    localStorage.setItem("mu-menu-id-counters", JSON.stringify(menuIdCounters));
-    localStorage.removeItem("mu-menu-dirty");
+    await persistLocalMenu();
     snapshotMenu();
     menuRestoreDialog.value.close();
-    showSnackbar("雲端菜單已下載到本機");
+    showSnackbar(items.length ? "雲端菜單已下載到本機" : "雲端菜單目前為空，本機菜單已清空");
   } catch (error) {
     showSnackbar(error.code === "SCHEMA_MISMATCH"
       ? "雲端「菜單」工作表欄位與目前版本不符，請檢查表頭"
@@ -439,83 +428,30 @@ async function inspectStorage() {
   const { usage, quota } = await navigator.storage.estimate();
   storageUsage.value = `${((usage || 0) / 1048576).toFixed(1)}／${((quota || 0) / 1048576).toFixed(0)} (MB)`;
 }
-onMounted(() => {
+onMounted(async () => {
   try {
-    loyaltyDiscount.value =
-      Number(localStorage.getItem("mu-loyalty-discount") || 0) || 0;
-    menuIdCounters = JSON.parse(
-      localStorage.getItem("mu-menu-id-counters") || "{}",
-    );
-    const saved = JSON.parse(localStorage.getItem("mu-menu") || "null");
-    if (Array.isArray(saved) && saved.length)
-      menu.splice(0, menu.length, ...saved);
-    else localStorage.removeItem("mu-menu-dirty");
-    let migrated = false;
-    menu.forEach((item) => {
-      if ("active" in item) {
-        delete item.active;
-        migrated = true;
-      }
-      if (!item.options) {
-        item.options = menuOptions(item);
-        migrated = true;
-      }
-    });
-    const categories = JSON.parse(
-      localStorage.getItem("mu-categories") || "null",
-    );
-    if (Array.isArray(categories)) {
-      if (categories.some((entry) => entry && typeof entry === "object")) {
-        const byName = new Map(groups.map((group) => [group[0], group]));
-        const ordered = categories
-          .filter((entry) => typeof entry?.name === "string")
-          .map((entry) => {
-            const group = byName.get(entry.name) || [entry.name, ""];
-            group[2] = entry.id || crypto.randomUUID();
-            return group;
-          });
-        groups.splice(0, groups.length, ...ordered);
-      } else {
-        for (const name of categories)
-          if (
-            typeof name === "string" &&
-            !groups.some((group) => group[0] === name)
-          )
-            groups.push([name, "", crypto.randomUUID()]);
-        migrated = true;
-      }
-    } else if (Array.isArray(saved) && saved.length) {
-      groups.splice(
-        0,
-        groups.length,
-        ...[...new Set(menu.map((item) => item.group))]
-          .filter((name) => name && name !== "減項")
-          .map((name) => [name, "", crypto.randomUUID()]),
-      );
-      migrated = true;
-    } else migrated = true;
-    for (const name of [...new Set(menu.map((item) => item.group))]) {
-      if (
-        name &&
-        name !== "減項" &&
-        !groups.some((group) => group[0] === name)
-      ) {
-        groups.push([name, "", crypto.randomUUID()]);
-        migrated = true;
-      }
+    const saved = (await localRead()).menuData;
+    if (saved && Array.isArray(saved.items)) {
+      menu.splice(0, menu.length, ...saved.items);
+      const categories = Array.isArray(saved.categories) ? saved.categories : [];
+      const names = categories.length
+        ? categories.map((entry) => entry.name)
+        : [...new Set(saved.items.map((item) => item.group))];
+      groups.splice(0, groups.length, ...names.filter(Boolean).map((name) => [
+        name, "", categories.find((entry) => entry.name === name)?.id || crypto.randomUUID(),
+      ]));
+      loyaltyDiscount.value = Number(saved.loyaltyDiscount) || 0;
+      menuIdCounters = saved.idCounters || {};
+      let migrated = false;
+      menu.forEach((item) => {
+        if ("active" in item) { delete item.active; migrated = true; }
+        if (!item.options) { item.options = menuOptions(item); migrated = true; }
+      });
+      if (updateMenuIds()) migrated = true;
+      if (migrated) await persistLocalMenu();
     }
-    if (updateMenuIds()) migrated = true;
-    if (migrated) {
-      localStorage.setItem("mu-menu", JSON.stringify(menu));
-      localStorage.setItem(
-        "mu-menu-id-counters",
-        JSON.stringify(menuIdCounters),
-      );
-      localStorage.setItem(
-        "mu-categories",
-        JSON.stringify(groups.map((g) => ({ name: g[0], id: g[2] }))),
-      );
-    }
+    for (const key of ["mu-menu", "mu-categories", "mu-loyalty-discount", "mu-menu-id-counters", "mu-menu-dirty"])
+      localStorage.removeItem(key);
     selectedSettingsCategory.value = groups[0]?.[0] || "";
     snapshotMenu();
   } catch (error) {
@@ -1406,7 +1342,7 @@ async function sync() {
     recordSyncError("本機資料讀取失敗：" + error.message);
     return;
   }
-  if (!state.queue.length && !hasMenuToBackup()) {
+  if (!state.queue.length) {
     showSnackbar("目前沒有需要備份的資料");
     return;
   }
@@ -1516,16 +1452,6 @@ async function performSync() {
           throw Error("雲端連續未處理同步資料，請稍後重試");
         if (!r.data.length) await new Promise((resolve) => setTimeout(resolve, 1500));
       } else emptyBatches = 0;
-    }
-    if (
-      localStorage.getItem("mu-menu-dirty") === "1" &&
-      !menuDraftDirty.value
-    ) {
-      await requestAppsScript(accessKey.value, {
-        action: "menuSave",
-        data: cloudMenuData(),
-      });
-      localStorage.removeItem("mu-menu-dirty");
     }
     await localChange((state) => {
       state.lastSync = new Date().toISOString();
