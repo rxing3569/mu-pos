@@ -26,38 +26,21 @@ const accessKey = useState("pos-access-key", () => ""),
   connected = useState("pos-connected", () => false);
 const online = ref(true),
   lastBackup = ref("");
-let backupTimer;
 function updateOnline() {
   online.value = navigator.onLine;
-  if (online.value) backupIfDue();
-}
-function updateVisible() {
-  if (!document.hidden) backupIfDue();
 }
 onMounted(() => {
   online.value = navigator.onLine;
   window.addEventListener("online", updateOnline);
   window.addEventListener("offline", updateOnline);
-  document.addEventListener("visibilitychange", updateVisible);
   accessKey.value = localStorage.getItem("mu-pos-access-key") || "";
   connected.value = !!accessKey.value;
   if (!accessKey.value) nextTick(() => connectDialog.value?.showModal());
-  backupTimer = setInterval(backupIfDue, 60000);
-  backupIfDue();
 });
 onBeforeUnmount(() => {
-  clearInterval(backupTimer);
   window.removeEventListener("online", updateOnline);
   window.removeEventListener("offline", updateOnline);
-  document.removeEventListener("visibilitychange", updateVisible);
 });
-async function backupIfDue() {
-  if (route.path === "/backup" || !online.value || !accessKey.value || busy.value) return;
-  const state = await localRead();
-  if (!state.queue.length && !hasMenuToBackup()) return;
-  const last = Date.parse(state.lastSync || "") || 0;
-  if (Date.now() - last >= 1800000) await sync();
-}
 function hasMenuToBackup() {
   return localStorage.getItem("mu-menu-dirty") === "1" && !menuDraftDirty.value;
 }
@@ -136,53 +119,7 @@ function showSnackbar(text) {
   }, 3000);
 }
 onBeforeUnmount(() => clearTimeout(snackbarTimer));
-const groups = reactive([
-  [
-    "義式咖啡",
-    "美式咖啡:100,義式特濃咖啡:100,卡布奇諾:120,拿鐵:120,焦糖瑪奇朵:130,榛果拿鐵:130,玫瑰拿鐵:130,愛爾蘭拿鐵:130,摩卡奇諾:130,海鹽拿鐵:130,太妃糖拿鐵:130,維也納:130,摩卡維也納:140,焦糖維也納:140,烤黑糖拿鐵:140,冰淇淋咖啡:150,冰檸檬咖啡:150",
-  ],
-  [
-    "賽風咖啡",
-    "純品藍山:150,香濃曼特寧:130,香醇曼巴:130,風味巴西:130,干邑摩卡:130,綜合咖啡:130",
-  ],
-  [
-    "茶",
-    "鮮果煮茶:120,義大利桔茶:120,柚子茶:120,伯爵茶:120,皇家錫蘭紅茶:100,茉香綠茶:100,玫瑰花茶:120,葡萄柚綠茶:120,百香風情:120,蜂蜜紅茶:120,檸檬紅茶:120,洛神花茶:120,梅子綠茶:120",
-  ],
-  [
-    "香濃奶茶",
-    "英式伯爵奶茶:120,皇家錫蘭奶茶:100,北美榛果奶茶:120,焦糖奶茶:120,可可奶茶:120,抹茶鮮奶茶:150,玫瑰鮮奶茶:150,太妃糖鮮奶茶:150,愛爾蘭鮮奶茶:150,黑糖珍珠奶茶:150,冰淇淋奶茶:150",
-  ],
-  [
-    "花草茶",
-    "普洱茶:150,桂圓紅棗茶:150,玄米茶:150,烏龍茶:150,南非國寶茶:150,洋甘菊花茶:150,養生茶:150,康福茶:150",
-  ],
-  [
-    "冰沙",
-    "咖啡冰沙:150,摩卡冰沙:150,巧克力冰沙:150,巧酥冰沙:150,抹茶奶霜:150,芒果冰沙:150,桑椹冰沙:150",
-  ],
-  [
-    "其他飲品",
-    "鮮榨柳丁汁:140,鮮榨檸檬汁:140,奇異果汁:140,蛋蜜汁:150,鮮奶:100,焦糖牛奶:120,榛果牛奶:120,巧克力牛奶:120,烤黑糖牛奶:120,黑糖珍珠牛奶:150,太妃糖牛奶:120,啤酒:150",
-  ],
-  [
-    "鬆餅",
-    "奶油鬆餅:150,覆盆莓果醬鬆餅:150,草莓果醬鬆餅:150,巧克力淋醬鬆餅:150,蜂蜜淋醬鬆餅:150,焦糖淋醬鬆餅:150,冰淇淋鬆餅:180",
-  ],
-  [
-    "厚片土司",
-    "起司奶油厚片:70,特濃花生厚片:60,香酥奶油厚片:60,美味香蒜厚片:60,香甜奶酥厚片:60,可口草莓厚片:60,巧克力厚片:60",
-  ],
-  [
-    "主餐",
-    "青醬牛肉義大利麵:250,焗烤茄汁牛肉千層麵:250,焗烤奶油海鮮螺旋麵:250,焗烤奶油海鮮飯:250,焗烤培根雞肉螺旋麵:250,焗烤培根雞肉飯:250,威尼斯奶油雞丁義大利麵:230,拿波里香辣雞肉義大利麵:230,西西里肉醬義大利麵:230,野菜南瓜素雞丁義大利麵:230",
-  ],
-]);
-groups.push([
-  "今日蛋糕",
-  "提拉米蘇:100,紐奧良起司:100,巧克力慕斯:100,巧克力伯爵:100,金莎巴斯克:100,烤布蕾:100",
-]);
-groups.push(["熟客券", "熟客券:1000"]);
+const groups = reactive([]);
 
 const loyaltyDiscount = ref(0),
   loyaltyDraft = ref("0"),
@@ -235,18 +172,8 @@ function setMealDrink(i, name) {
     heat: "熱",
   };
 }
-const menu = reactive(
-  groups.flatMap(([group, items], g) =>
-    (items ? items.split(",") : []).map((s, i) => {
-      const [name, p] = s.split(":");
-      return { id: g + "-" + i, group, name, price: Number(p) };
-    }),
-  ),
-);
-groups.forEach((group, index) => {
-  group[2] ||= "legacy-" + index;
-});
-const selectedSettingsCategory = ref(groups[0][0]);
+const menu = reactive([]);
+const selectedSettingsCategory = ref("");
 const menuSaveConfirmDialog = ref(null);
 async function confirmMenuSave() {
   if (await saveMenuDraft()) menuSaveConfirmDialog.value?.close();
@@ -451,7 +378,12 @@ async function restoreMenuFromCloud() {
     const result = await requestAppsScript(accessKey.value, {
       action: "menuGet",
     });
-    if (!result.data.length) throw Error("雲端尚無菜單備份");
+    if (!Array.isArray(result.data)) throw Error("雲端菜單資料格式不符");
+    if (!result.data.length) {
+      menuRestoreDialog.value.close();
+      showSnackbar("雲端尚無菜單資料；請先在「菜單」工作表填入後再下載");
+      return;
+    }
     const categories = result.data
       .filter((item) => item.type === "分類" && item.key !== "減項")
       .map((item) => ({ name: item.key, id: item.key, nextItemNo: item.nextItemNo }));
@@ -485,12 +417,18 @@ async function restoreMenuFromCloud() {
     );
     updateMenuIds();
     selectedSettingsCategory.value = groups[0]?.[0] || "";
-    persistCategories();
+    localStorage.setItem("mu-menu", JSON.stringify(menu));
+    localStorage.setItem("mu-categories", JSON.stringify(groups.map((g) => ({ name: g[0], id: g[2] }))));
+    localStorage.setItem("mu-loyalty-discount", String(loyaltyDiscount.value));
+    localStorage.setItem("mu-menu-id-counters", JSON.stringify(menuIdCounters));
+    localStorage.removeItem("mu-menu-dirty");
+    snapshotMenu();
     menuRestoreDialog.value.close();
-    markMenuDraft();
-    showSnackbar("已載入雲端菜單草稿，請按儲存套用");
+    showSnackbar("雲端菜單已下載到本機");
   } catch (error) {
-    showSnackbar(error.message);
+    showSnackbar(error.code === "SCHEMA_MISMATCH"
+      ? "雲端「菜單」工作表欄位與目前版本不符，請檢查表頭"
+      : error.message);
   }
 }
 async function inspectStorage() {
@@ -511,7 +449,7 @@ onMounted(() => {
     const saved = JSON.parse(localStorage.getItem("mu-menu") || "null");
     if (Array.isArray(saved) && saved.length)
       menu.splice(0, menu.length, ...saved);
-    else localStorage.setItem("mu-menu-dirty", "1");
+    else localStorage.removeItem("mu-menu-dirty");
     let migrated = false;
     menu.forEach((item) => {
       if ("active" in item) {
@@ -1284,7 +1222,6 @@ async function clearDemoData() {
     showSnackbar(result.remote
       ? `已清除 ${result.local.toLocaleString()} 筆本機測試訂單；${result.remote.toLocaleString()} 筆雲端刪除待上傳`
       : `已清除 ${result.local.toLocaleString()} 筆測試訂單`);
-    if (result.remote && online.value) await sync();
   } catch (error) {
     showSnackbar("清除測試資料失敗：" + error.message);
   } finally {
