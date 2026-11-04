@@ -1,6 +1,6 @@
-const CACHE = 'mu-pos-shell-v3'
+const CACHE = 'mu-pos-shell-v4'
 const BASE = new URL('./', self.location.href).pathname
-const pages = [BASE, `${BASE}orders`, `${BASE}accounts`, `${BASE}settings`, `${BASE}backup`]
+const pages = [BASE, `${BASE}orders/`, `${BASE}accounts/`, `${BASE}settings/`, `${BASE}backup/`]
 const staticFiles = ['manifest.webmanifest', 'favicon.ico', 'icon-192.png', 'icon-512.png'].map(file => `${BASE}${file}`)
 
 self.addEventListener('install', event => event.waitUntil((async () => {

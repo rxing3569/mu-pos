@@ -10,6 +10,7 @@ import { dayKey, dailyRevenue, itemCount } from "~/utils/dashboard.mjs";
 import { requestAppsScript, listAppsScript } from "~/utils/apps-script.mjs";
 import { reconcileMenuIds } from "~/utils/menu-ids.mjs";
 import { makeDemoOrders, normalizeDemoOrder } from "~/utils/demo-orders.mjs";
+import { normalizedPath } from "~/utils/route-path.mjs";
 import uploadIcon from "~/assets/icons/upload.svg?url";
 import backupIcon from "~/assets/icons/backup.svg?url";
 const isDev = import.meta.dev;
@@ -22,6 +23,9 @@ const router = useRouter(),
   message = ref(""),
   busy = ref(false),
   orderNote = ref("");
+function isPage(path) {
+  return normalizedPath(route.path) === path;
+}
 const accessKey = useState("pos-access-key", () => ""),
   connected = useState("pos-connected", () => false);
 const online = ref(true),
@@ -310,8 +314,8 @@ onBeforeUnmount(() =>
 );
 const removeMenuGuard = router.beforeEach((to, from) => {
   if (
-    from.path !== "/settings" ||
-    to.path === "/settings" ||
+    normalizedPath(from.path) !== "/settings" ||
+    normalizedPath(to.path) === "/settings" ||
     !menuDraftDirty.value
   )
     return true;
@@ -462,7 +466,7 @@ onMounted(async () => {
   watch(
     menu,
     () => {
-      if (route.path === "/settings") markMenuDraft();
+      if (isPage("/settings")) markMenuDraft();
     },
     { deep: true, flush: "sync" },
   );
@@ -2248,21 +2252,21 @@ function exportCsv() {
       </div>
       <div
         v-if="
-          (!menuReady && (route.path === '/' || route.path === '/settings')) ||
+          (!menuReady && (isPage('/') || isPage('/settings'))) ||
           ((!ordersReady || ordersLoading) &&
-            (route.path === '/orders' || route.path === '/accounts'))
+            (isPage('/orders') || isPage('/accounts')))
         "
         class="menu-loading"
         role="status"
       >
         <span class="upload-spinner" aria-hidden="true"></span
         >{{
-          route.path === "/orders" || route.path === "/accounts"
+          isPage("/orders") || isPage("/accounts")
             ? "正在讀取本機訂單…"
             : "正在讀取本機菜單…"
         }}
       </div>
-      <div v-else-if="route.path === '/'" class="workspace">
+      <div v-else-if="isPage('/')" class="workspace">
         <MenuCatalog
           :groups="groups"
           :items="menu"
@@ -2354,7 +2358,7 @@ function exportCsv() {
       </div>
       <section
         class="page-scroll dashboard"
-        v-else-if="route.path === '/orders'"
+        v-else-if="isPage('/orders')"
       >
         <header class="dashboard-header">
           <div class="metric-grid orders-metric-grid">
@@ -2438,7 +2442,7 @@ function exportCsv() {
       </section>
       <section
         class="page-scroll dashboard"
-        v-else-if="route.path === '/accounts'"
+        v-else-if="isPage('/accounts')"
       >
         <header class="dashboard-header">
           <div class="metric-grid">
@@ -2593,7 +2597,7 @@ function exportCsv() {
         </article>
       </section>
       <section
-        v-else-if="route.path === '/settings'"
+        v-else-if="isPage('/settings')"
         class="page-scroll settings-page"
       >
         <div class="settings-wrap">
@@ -2927,7 +2931,7 @@ function exportCsv() {
         </dialog>
       </section>
       <section
-        v-else-if="route.path === '/backup'"
+        v-else-if="isPage('/backup')"
         class="page-scroll mobile-backup-page"
       >
         <div class="mobile-backup-panel">
